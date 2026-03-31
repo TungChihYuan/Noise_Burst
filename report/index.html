@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Night Photography Denoising Pipeline — Report</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&family=Syne:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0c0f;
+  --bg2: #111418;
+  --bg3: #181c22;
+  --border: rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.14);
+  --text: #e8eaed;
+  --muted: #7a808a;
+  --accent: #4f8ef7;
+  --accent2: #7ec8a4;
+  --amber: #f0a84e;
+  --coral: #e86060;
+  --purple: #a78bfa;
+  --mono: 'DM Mono', monospace;
+  --serif: 'Instrument Serif', serif;
+  --sans: 'Syne', sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.65;
+  overflow-x: hidden;
+}
+
+/* ── Layout ── */
+.page { max-width: 1100px; margin: 0 auto; padding: 0 2rem 6rem; }
+
+/* ── Hero ── */
+.hero {
+  padding: 5rem 0 4rem;
+  border-bottom: 1px solid var(--border);
+}
+.hero-eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 1rem;
+}
+.hero h1 {
+  font-size: clamp(2.2rem, 5vw, 3.8rem);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -.03em;
+}
+.hero h1 em { font-family: var(--serif); font-style: italic; color: var(--amber); font-weight: 400; }
+.hero-sub {
+  margin-top: 1.2rem;
+  color: var(--muted);
+  font-size: 1rem;
+  max-width: 600px;
+}
+.hero-meta {
+  display: flex; gap: 2rem; margin-top: 2rem;
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+}
+.hero-meta span { color: var(--text); }
+
+/* ── Section headers ── */
+.section { padding: 4rem 0 2rem; }
+.section-label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--accent2); margin-bottom: .6rem;
+}
+.section-title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; }
+.section-body { color: #b0b6c0; margin-top: 1rem; line-height: 1.75; max-width: 720px; }
+
+/* ── Problem cards ── */
+.cards-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; margin-top: 2rem; }
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.5rem 1.75rem;
+  transition: border-color .2s;
+}
+.card:hover { border-color: var(--border2); }
+.card-icon { font-size: 1.5rem; margin-bottom: .9rem; }
+.card-title { font-size: 1rem; font-weight: 700; margin-bottom: .5rem; }
+.card-text { font-size: .875rem; color: var(--muted); line-height: 1.6; }
+.card-tag {
+  display: inline-block; margin-top: 1rem;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
+  text-transform: uppercase; padding: 3px 8px;
+  border-radius: 4px; border: 1px solid;
+}
+.tag-problem { color: var(--coral); border-color: rgba(232,96,96,.3); background: rgba(232,96,96,.07); }
+.tag-solution { color: var(--accent2); border-color: rgba(126,200,164,.3); background: rgba(126,200,164,.07); }
+
+/* ── Pipeline diagram ── */
+.pipeline-flow {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 2.5rem 2rem;
+  margin-top: 2rem;
+  overflow-x: auto;
+}
+.flow-row {
+  display: flex; align-items: center; gap: 0; flex-wrap: nowrap;
+  min-width: 700px;
+}
+.flow-step {
+  flex: 1; background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  position: relative;
+}
+.flow-step:hover, .flow-step.active {
+  border-color: var(--accent);
+  background: rgba(79,142,247,.06);
+}
+.flow-step-num {
+  font-family: var(--mono); font-size: 10px; color: var(--accent);
+  letter-spacing: .1em; text-transform: uppercase; margin-bottom: .35rem;
+}
+.flow-step-name { font-size: .875rem; font-weight: 700; }
+.flow-step-sub { font-size: .75rem; color: var(--muted); margin-top: .25rem; }
+.flow-arrow {
+  flex: 0 0 32px; text-align: center;
+  color: var(--border2); font-size: 18px; margin: 0 -4px;
+  user-select: none;
+}
+.flow-detail {
+  margin-top: 1.25rem; padding: 1.25rem 1.5rem;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 10px; font-size: .875rem;
+  display: none;
+}
+.flow-detail.show { display: block; }
+.flow-detail h4 { font-size: .95rem; font-weight: 700; margin-bottom: .5rem; color: var(--accent); }
+.flow-detail p { color: #9aa0ab; line-height: 1.7; }
+.flow-detail code {
+  display: inline-block; margin-top: .75rem;
+  font-family: var(--mono); font-size: .8rem;
+  background: var(--bg); padding: .6rem 1rem;
+  border-radius: 6px; border: 1px solid var(--border);
+  color: var(--accent2); width: 100%;
+}
+
+/* ── Method comparison ── */
+.method-tabs { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: 2rem; }
+.mtab {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .05em;
+  padding: .5rem 1.1rem; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg2);
+  cursor: pointer; color: var(--muted); transition: all .15s;
+}
+.mtab:hover { border-color: var(--border2); color: var(--text); }
+.mtab.active { background: rgba(79,142,247,.12); border-color: var(--accent); color: var(--accent); }
+
+.method-panels { margin-top: 1.25rem; }
+.method-panel { display: none; }
+.method-panel.show { display: block; }
+.method-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+@media (max-width: 700px) { .method-grid { grid-template-columns: 1fr; } }
+
+.method-desc {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 1.5rem 1.75rem;
+}
+.method-desc h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: .6rem; }
+.method-desc p { color: #9aa0ab; font-size: .875rem; line-height: 1.75; }
+.method-formula {
+  margin-top: 1rem; font-family: var(--mono); font-size: .82rem;
+  background: var(--bg); color: var(--amber);
+  padding: .75rem 1rem; border-radius: 8px;
+  border-left: 3px solid var(--amber);
+}
+.method-pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-top: 1rem; }
+.pro, .con {
+  font-size: .8rem; padding: .5rem .75rem;
+  border-radius: 6px;
+}
+.pro { background: rgba(126,200,164,.07); color: var(--accent2); border: 1px solid rgba(126,200,164,.2); }
+.con { background: rgba(232,96,96,.07); color: var(--coral); border: 1px solid rgba(232,96,96,.2); }
+.pro::before { content: '+ '; }
+.con::before { content: '− '; }
+
+.method-metrics {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 1.5rem 1.75rem;
+}
+.metric-row { display: flex; justify-content: space-between; align-items: center; padding: .6rem 0; border-bottom: 1px solid var(--border); }
+.metric-row:last-child { border: none; }
+.metric-label { font-size: .875rem; color: var(--muted); }
+.metric-val { font-family: var(--mono); font-size: 1.1rem; font-weight: 500; }
+.bar-wrap { height: 4px; background: var(--border); border-radius: 2px; flex: 1; margin: 0 1rem; }
+.bar-fill { height: 100%; border-radius: 2px; transition: width .5s ease; }
+
+/* ── Data collection ── */
+.data-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 2rem; }
+.data-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 1.25rem 1.5rem;
+}
+.data-card-label { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: .5rem; }
+.data-card-val { font-size: 1.4rem; font-weight: 700; }
+.data-card-sub { font-size: .8rem; color: var(--muted); margin-top: .25rem; }
+
+/* ── Expectations ── */
+.expect-timeline { margin-top: 2rem; position: relative; }
+.expect-timeline::before {
+  content: ''; position: absolute; left: 18px; top: 0; bottom: 0; width: 1px; background: var(--border);
+}
+.expect-item { display: flex; gap: 1.25rem; padding: 1rem 0; }
+.expect-dot {
+  width: 36px; height: 36px; flex: 0 0 36px;
+  border-radius: 50%; border: 1px solid var(--border2);
+  background: var(--bg2); display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 12px; color: var(--accent); z-index: 1;
+}
+.expect-content { padding-top: .4rem; }
+.expect-title { font-weight: 700; font-size: .95rem; margin-bottom: .3rem; }
+.expect-text { font-size: .875rem; color: var(--muted); line-height: 1.65; }
+
+/* ── Code block ── */
+.code-block {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 1.5rem;
+  font-family: var(--mono); font-size: .82rem; line-height: 1.7;
+  overflow-x: auto; color: #b0bcc8; margin-top: 1.5rem;
+}
+.code-block .k { color: var(--purple); }
+.code-block .s { color: var(--accent2); }
+.code-block .c { color: #4e5c6a; }
+.code-block .n { color: var(--amber); }
+.code-block .p { color: var(--accent); }
+
+/* ── Scrollspy nav ── */
+.nav {
+  position: fixed; top: 2rem; right: 2rem;
+  display: flex; flex-direction: column; gap: .6rem;
+  z-index: 100;
+}
+@media (max-width: 900px) { .nav { display: none; } }
+.nav-dot {
+  width: 6px; height: 6px; border-radius: 3px;
+  background: var(--border2); cursor: pointer;
+  transition: all .2s;
+}
+.nav-dot.active { width: 18px; background: var(--accent); }
+
+/* ── PSNR bar chart ── */
+.bar-chart { margin-top: 2rem; }
+.bc-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+.bc-label { font-family: var(--mono); font-size: 12px; color: var(--muted); width: 90px; text-align: right; }
+.bc-bar-wrap { flex: 1; height: 28px; background: var(--bg3); border-radius: 6px; overflow: hidden; position: relative; }
+.bc-bar { height: 100%; border-radius: 6px; display: flex; align-items: center; padding-left: 10px; font-family: var(--mono); font-size: 11px; font-weight: 500; transition: width .8s cubic-bezier(.4,0,.2,1); }
+.bc-bar.mean      { background: rgba(167,139,250,.25); color: var(--purple); border: 1px solid rgba(167,139,250,.4); }
+.bc-bar.weighted  { background: rgba(79,142,247,.25);  color: var(--accent); border: 1px solid rgba(79,142,247,.4); }
+.bc-bar.frequency { background: rgba(240,168,78,.2);   color: var(--amber);  border: 1px solid rgba(240,168,78,.35); }
+.bc-bar.nlm       { background: rgba(126,200,164,.2);  color: var(--accent2);border: 1px solid rgba(126,200,164,.35); }
+
+/* ── Noise viz ── */
+.noise-viz { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; margin-top: 1.5rem; }
+.noise-img-box {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 1rem; flex: 1; min-width: 180px; text-align: center;
+}
+.noise-canvas { display: block; width: 100%; border-radius: 6px; }
+.noise-label { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: .6rem; }
+
+footer {
+  border-top: 1px solid var(--border); padding: 2rem 0;
+  display: flex; justify-content: space-between; align-items: center;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  flex-wrap: wrap; gap: 1rem;
+}
+</style>
+</head>
+<body>
+
+<!-- Scrollspy nav -->
+<nav class="nav" id="nav">
+  <div class="nav-dot active" data-section="s-hero" title="Overview"></div>
+  <div class="nav-dot" data-section="s-problem" title="Problem Statement"></div>
+  <div class="nav-dot" data-section="s-data" title="Data Collection"></div>
+  <div class="nav-dot" data-section="s-solution" title="Proposed Solution"></div>
+  <div class="nav-dot" data-section="s-methods" title="Denoising Methods"></div>
+  <div class="nav-dot" data-section="s-results" title="Expected Results"></div>
+</nav>
+
+<div class="page">
+
+<!-- ── Hero ── -->
+<section class="hero" id="s-hero">
+  <div class="hero-eyebrow">ELEG / CISC Imaging · Class Project</div>
+  <h1>Night Photography<br>Multi-Frame <em>Denoising</em></h1>
+  <p class="hero-sub">
+    A burst-capture pipeline that solves the ISO–noise trade-off in low-light photography
+    through image registration and adaptive multi-frame fusion.
+  </p>
+  <div class="hero-meta">
+    Pipeline stages: <span>5</span> &nbsp;·&nbsp;
+    Denoising methods: <span>4</span> &nbsp;·&nbsp;
+    Input format: <span>Canon CR3 RGGB Bayer</span> &nbsp;·&nbsp;
+    Stack: <span>NumPy · OpenCV · SciPy</span>
+  </div>
+</section>
+
+<!-- ── Problem Statement ── -->
+<section class="section" id="s-problem">
+  <div class="section-label">01 — Problem Statement</div>
+  <h2 class="section-title">The Fundamental Dilemma of Night Photography</h2>
+  <p class="section-body">
+    Capturing clear images at night requires sufficient photon count per pixel. Photographers
+    face a three-way conflict between shutter speed, aperture, and ISO sensitivity.
+    Standard practice forces a choice between two bad outcomes.
+  </p>
+
+  <div class="cards-3">
+    <div class="card">
+      <div class="card-icon">🌃</div>
+      <div class="card-title">Long shutter → Motion blur</div>
+      <p class="card-text">
+        Increasing exposure time accumulates more photons, but any subject movement or
+        camera shake during the exposure interval integrates into a spatial smear across pixels —
+        irreversibly destroying high-frequency detail.
+      </p>
+      <span class="card-tag tag-problem">Blur artefact</span>
+    </div>
+    <div class="card">
+      <div class="card-icon">🔆</div>
+      <div class="card-title">High ISO → Sensor noise</div>
+      <p class="card-text">
+        Amplifying the sensor signal (high ISO) keeps shutter speeds short enough to freeze motion,
+        but the analog amplifier boosts both signal and read noise. The resulting image exhibits
+        strong shot noise and fixed-pattern noise.
+      </p>
+      <span class="card-tag tag-problem">Noise artefact</span>
+    </div>
+    <div class="card">
+      <div class="card-icon">📷</div>
+      <div class="card-title">Burst capture → Our solution</div>
+      <p class="card-text">
+        Using burst mode at high ISO captures many short-exposure frames that each freeze motion.
+        Aligning these frames and fusing them statistically reduces noise by up to √N while
+        recovering the original scene signal.
+      </p>
+      <span class="card-tag tag-solution">Multi-frame fusion</span>
+    </div>
+  </div>
+
+  <!-- Noise visualisation (canvas-generated) -->
+  <div class="noise-viz" style="margin-top:2rem;">
+    <div class="noise-img-box">
+      <canvas id="canvas-noisy" class="noise-canvas" width="200" height="160"></canvas>
+      <div class="noise-label">Single frame (high ISO, noisy)</div>
+    </div>
+    <div class="noise-img-box">
+      <canvas id="canvas-burst" class="noise-canvas" width="200" height="160"></canvas>
+      <div class="noise-label">8-frame burst average</div>
+    </div>
+    <div class="noise-img-box">
+      <canvas id="canvas-clean" class="noise-canvas" width="200" height="160"></canvas>
+      <div class="noise-label">After full pipeline (NLM)</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Data Collection ── -->
+<section class="section" id="s-data">
+  <div class="section-label">02 — Data Collection</div>
+  <h2 class="section-title">Burst Captures with Canon Camera</h2>
+  <p class="section-body">
+    We use a Canon DSLR/mirrorless in continuous shooting mode. Each burst targets the
+    same scene from a tripod and handheld configurations to test robustness across
+    different magnitudes of inter-frame motion.
+  </p>
+
+  <div class="data-grid">
+    <div class="data-card">
+      <div class="data-card-label">Output format</div>
+      <div class="data-card-val" style="font-size:1.1rem;">CR3 RAW</div>
+      <div class="data-card-sub">Canon RGGB Bayer mosaic, 14-bit linear</div>
+    </div>
+    <div class="data-card">
+      <div class="data-card-label">Burst size</div>
+      <div class="data-card-val">8 – 20</div>
+      <div class="data-card-sub">frames per scene, continuous mode</div>
+    </div>
+    <div class="data-card">
+      <div class="data-card-label">ISO range</div>
+      <div class="data-card-val">3200 – 12800</div>
+      <div class="data-card-sub">high gain, short shutter (&lt; 1/60 s)</div>
+    </div>
+    <div class="data-card">
+      <div class="data-card-label">Scene types</div>
+      <div class="data-card-val">Indoor &amp; outdoor</div>
+      <div class="data-card-sub">street, static still life, low-lit room</div>
+    </div>
+    <div class="data-card">
+      <div class="data-card-label">Motion conditions</div>
+      <div class="data-card-val">2 setups</div>
+      <div class="data-card-sub">tripod (sub-pixel jitter) + handheld (1–5 px)</div>
+    </div>
+    <div class="data-card">
+      <div class="data-card-label">Pre-processing</div>
+      <div class="data-card-val" style="font-size:1rem;">rawpy / dcraw</div>
+      <div class="data-card-sub">libraw decodes CR3; black-level subtracted</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Proposed Solution ── -->
+<section class="section" id="s-solution">
+  <div class="section-label">03 — Proposed Solution</div>
+  <h2 class="section-title">The Five-Stage Pipeline</h2>
+  <p class="section-body">
+    Click any stage for implementation details and the corresponding Python module.
+  </p>
+
+  <div class="pipeline-flow">
+    <div class="flow-row">
+      <div class="flow-step active" onclick="selectStep(0)" id="step-0">
+        <div class="flow-step-num">01</div>
+        <div class="flow-step-name">RAW Load</div>
+        <div class="flow-step-sub">CR3 → Bayer</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step" onclick="selectStep(1)" id="step-1">
+        <div class="flow-step-num">02</div>
+        <div class="flow-step-name">Registration</div>
+        <div class="flow-step-sub">Align burst</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step" onclick="selectStep(2)" id="step-2">
+        <div class="flow-step-num">03</div>
+        <div class="flow-step-name">Denoising</div>
+        <div class="flow-step-sub">4 methods</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step" onclick="selectStep(3)" id="step-3">
+        <div class="flow-step-num">04</div>
+        <div class="flow-step-name">ISP</div>
+        <div class="flow-step-sub">Demosaic + WB</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step" onclick="selectStep(4)" id="step-4">
+        <div class="flow-step-num">05</div>
+        <div class="flow-step-name">Output</div>
+        <div class="flow-step-sub">PNG + metrics</div>
+      </div>
+    </div>
+
+    <div class="flow-detail show" id="detail-0">
+      <h4>Stage 1 — RAW Loading (<code style="color:var(--accent2);background:none;border:none;padding:0">pipeline/raw_loader.py</code>)</h4>
+      <p>
+        Canon CR3 files are decoded with <strong>rawpy</strong> (wraps libraw). The raw sensor
+        values are extracted as a 2-D Bayer mosaic (RGGB pattern) and normalised from 14-bit
+        integers to float32 [0,1]. Black-level subtraction and white-level normalisation are
+        applied automatically. A <strong>dcraw</strong> shell-out provides a fallback for CR3
+        files that rawpy cannot parse.
+      </p>
+      <code>bayer = load_raw_bayer("IMG_0042.CR3")  # → float32 (H×W)</code>
+    </div>
+    <div class="flow-detail" id="detail-1">
+      <h4>Stage 2 — Image Registration (<code style="color:var(--accent2);background:none;border:none;padding:0">pipeline/registration.py</code>)</h4>
+      <p>
+        Three algorithms are available: <strong>ECC</strong> (Enhanced Correlation Coefficient,
+        sub-pixel translation via iterative gradient descent), <strong>ORB feature matching</strong>
+        (RANSAC-based partial affine for rotation/scale), and <strong>phase correlation</strong>
+        (FFT O(N log N), fastest). The sharpest frame is automatically selected as the reference.
+        Registration is performed on the Bayer mosaic directly — demosaicing before registration
+        would smear colour edges.
+      </p>
+      <code>aligned, transforms = register_burst(frames, method="ecc")</code>
+    </div>
+    <div class="flow-detail" id="detail-2">
+      <h4>Stage 3 — Denoising (<code style="color:var(--accent2);background:none;border:none;padding:0">pipeline/denoising.py</code>)</h4>
+      <p>
+        Four selectable methods (see the Methods section below). All operate on the
+        aligned Bayer-domain stack. The statistical signal-to-noise improvement scales
+        as √N for uncorrelated Gaussian noise, where N is the number of aligned frames.
+      </p>
+      <code>result = denoise_burst(aligned, method="weighted")</code>
+    </div>
+    <div class="flow-detail" id="detail-3">
+      <h4>Stage 4 — ISP Post-processing (<code style="color:var(--accent2);background:none;border:none;padding:0">pipeline/isp.py</code>)</h4>
+      <p>
+        Converts the denoised Bayer mosaic to a viewable RGB image:
+        (1) <strong>Demosaicing</strong> — bilinear, edge-aware, or VNG interpolation to reconstruct
+        missing colour samples; (2) <strong>White balance</strong> — grey-world or manual gain
+        per channel; (3) <strong>Reinhard tone mapping</strong> — compresses HDR linear values;
+        (4) <strong>Gamma encoding</strong> — 2.2 power law for display.
+      </p>
+      <code>rgb_u8 = run_isp(denoised_bayer, demosaic_method="edgeaware")</code>
+    </div>
+    <div class="flow-detail" id="detail-4">
+      <h4>Stage 5 — Output and Metrics</h4>
+      <p>
+        Each method produces a PNG alongside a JSON metrics file containing PSNR (dB),
+        SSIM, processing time, and estimated noise σ. A side-by-side comparison strip
+        is saved automatically. The pipeline is invoked as a CLI:
+      </p>
+      <code>python run_pipeline.py --input_dir ./data/ --method all --reg_method ecc</code>
+    </div>
+  </div>
+</section>
+
+<!-- ── Denoising Methods ── -->
+<section class="section" id="s-methods">
+  <div class="section-label">04 — Denoising Methods</div>
+  <h2 class="section-title">Four Selectable Fusion Strategies</h2>
+
+  <div class="method-tabs">
+    <div class="mtab active" onclick="selectMethod('mean')">Mean</div>
+    <div class="mtab" onclick="selectMethod('weighted')">Weighted</div>
+    <div class="mtab" onclick="selectMethod('frequency')">Frequency</div>
+    <div class="mtab" onclick="selectMethod('nlm')">NLM</div>
+  </div>
+
+  <div class="method-panels">
+    <!-- Mean -->
+    <div class="method-panel show" id="m-mean">
+      <div class="method-grid">
+        <div class="method-desc">
+          <h3>Simple Temporal Mean</h3>
+          <p>
+            Computes the arithmetic mean of all N aligned frames at each pixel.
+            For i.i.d. Gaussian noise with variance σ², averaging N frames reduces
+            variance to σ²/N — an SNR gain of √N in amplitude.
+            Fast, interpretable, and a strong baseline.
+          </p>
+          <div class="method-formula">μ(x,y) = (1/N) Σᵢ fᵢ(x,y)</div>
+          <div class="method-pros-cons">
+            <span class="pro">O(N) complexity</span>
+            <span class="con">Sensitive to misregistration</span>
+            <span class="pro">Interpretable, no parameters</span>
+            <span class="con">Assumes uniform noise</span>
+          </div>
+        </div>
+        <div class="method-metrics">
+          <div class="metric-row">
+            <span class="metric-label">Expected PSNR gain</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:45%;background:var(--purple)"></div></div>
+            <span class="metric-val" style="color:var(--purple)">+4.5 dB</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">SSIM improvement</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:40%;background:var(--purple)"></div></div>
+            <span class="metric-val" style="color:var(--purple)">+0.12</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Speed (8 frames)</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:95%;background:var(--purple)"></div></div>
+            <span class="metric-val" style="color:var(--purple)">~0.01s</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Noise model</span>
+            <span class="metric-val" style="font-size:.85rem;color:var(--muted)">Gaussian i.i.d.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Weighted -->
+    <div class="method-panel" id="m-weighted">
+      <div class="method-grid">
+        <div class="method-desc">
+          <h3>Variance-Weighted Average</h3>
+          <p>
+            Computes a per-pixel inverse-variance weighted average. Pixels that exhibit
+            high local variance across the burst (motion residuals, noise spikes) receive
+            lower weight, preserving the contribution of well-aligned, low-noise pixels.
+            Robust to partial registration failures.
+          </p>
+          <div class="method-formula">μ_w(x,y) = Σᵢ wᵢ·fᵢ / Σᵢ wᵢ &nbsp;where wᵢ = 1/(σ²_local + ε)</div>
+          <div class="method-pros-cons">
+            <span class="pro">Handles outlier frames</span>
+            <span class="con">Local variance estimation adds overhead</span>
+            <span class="pro">Spatially adaptive</span>
+            <span class="con">Window size is a free parameter</span>
+          </div>
+        </div>
+        <div class="method-metrics">
+          <div class="metric-row">
+            <span class="metric-label">Expected PSNR gain</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:62%;background:var(--accent)"></div></div>
+            <span class="metric-val" style="color:var(--accent)">+6.2 dB</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">SSIM improvement</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:58%;background:var(--accent)"></div></div>
+            <span class="metric-val" style="color:var(--accent)">+0.17</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Speed (8 frames)</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:78%;background:var(--accent)"></div></div>
+            <span class="metric-val" style="color:var(--accent)">~0.08s</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Noise model</span>
+            <span class="metric-val" style="font-size:.85rem;color:var(--muted)">Non-uniform, spatially varying</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Frequency -->
+    <div class="method-panel" id="m-frequency">
+      <div class="method-grid">
+        <div class="method-desc">
+          <h3>Frequency-Domain Wiener Filter</h3>
+          <p>
+            First collapses the burst with temporal mean to reduce noise variance, then
+            applies a 2-D Wiener filter in the DFT domain. The Wiener transfer function
+            attenuates frequency bands where noise power exceeds signal power, while
+            preserving texture-rich frequency components.
+          </p>
+          <div class="method-formula">H(u,v) = |S(u,v)|² / (|S(u,v)|² + σ²_n)</div>
+          <div class="method-pros-cons">
+            <span class="pro">Excellent texture preservation</span>
+            <span class="con">Assumes stationarity</span>
+            <span class="pro">Principled SNR optimality</span>
+            <span class="con">Ringing at sharp edges</span>
+          </div>
+        </div>
+        <div class="method-metrics">
+          <div class="metric-row">
+            <span class="metric-label">Expected PSNR gain</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:55%;background:var(--amber)"></div></div>
+            <span class="metric-val" style="color:var(--amber)">+5.5 dB</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">SSIM improvement</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:50%;background:var(--amber)"></div></div>
+            <span class="metric-val" style="color:var(--amber)">+0.15</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Speed (8 frames)</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:70%;background:var(--amber)"></div></div>
+            <span class="metric-val" style="color:var(--amber)">~0.12s</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Noise model</span>
+            <span class="metric-val" style="font-size:.85rem;color:var(--muted)">White Gaussian (estimated σ)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- NLM -->
+    <div class="method-panel" id="m-nlm">
+      <div class="method-grid">
+        <div class="method-desc">
+          <h3>Non-Local Means (NLM)</h3>
+          <p>
+            Leverages the self-similarity of natural images: each pixel is denoised using
+            a weighted average over <em>all</em> pixels whose local neighbourhood patch is
+            similar. Similarity is measured by the Euclidean distance of patch intensities.
+            Applied via OpenCV's <code>fastNlMeansDenoising</code> on the temporally averaged
+            frame.
+          </p>
+          <div class="method-formula">NLM(x) = Σ_y w(x,y)·f(y) &nbsp; where w ∝ exp(−‖P_x−P_y‖²/h²)</div>
+          <div class="method-pros-cons">
+            <span class="pro">State-of-art perceptual quality</span>
+            <span class="con">O(N²) patch comparisons, slow</span>
+            <span class="pro">No blur at structural edges</span>
+            <span class="con">h parameter needs tuning</span>
+          </div>
+        </div>
+        <div class="method-metrics">
+          <div class="metric-row">
+            <span class="metric-label">Expected PSNR gain</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:75%;background:var(--accent2)"></div></div>
+            <span class="metric-val" style="color:var(--accent2)">+7.5 dB</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">SSIM improvement</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:72%;background:var(--accent2)"></div></div>
+            <span class="metric-val" style="color:var(--accent2)">+0.21</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Speed (8 frames)</span>
+            <div class="bar-wrap"><div class="bar-fill" style="width:18%;background:var(--accent2)"></div></div>
+            <span class="metric-val" style="color:var(--accent2)">~2.4s</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Noise model</span>
+            <span class="metric-val" style="font-size:.85rem;color:var(--muted)">Patch-similarity based</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PSNR bar chart -->
+  <h3 style="margin-top:2.5rem;font-size:1rem;font-weight:700;color:var(--muted)">Expected PSNR comparison (8-frame burst, σ=0.07)</h3>
+  <div class="bar-chart">
+    <div class="bc-row">
+      <div class="bc-label">single</div>
+      <div class="bc-bar-wrap"><div class="bc-bar mean" style="width:20%">baseline</div></div>
+    </div>
+    <div class="bc-row">
+      <div class="bc-label">mean</div>
+      <div class="bc-bar-wrap"><div class="bc-bar mean" style="width:50%">+4.5 dB</div></div>
+    </div>
+    <div class="bc-row">
+      <div class="bc-label">weighted</div>
+      <div class="bc-bar-wrap"><div class="bc-bar weighted" style="width:65%">+6.2 dB</div></div>
+    </div>
+    <div class="bc-row">
+      <div class="bc-label">frequency</div>
+      <div class="bc-bar-wrap"><div class="bc-bar frequency" style="width:57%">+5.5 dB</div></div>
+    </div>
+    <div class="bc-row">
+      <div class="bc-label">nlm</div>
+      <div class="bc-bar-wrap"><div class="bc-bar nlm" style="width:80%">+7.5 dB</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Expected Results ── -->
+<section class="section" id="s-results">
+  <div class="section-label">05 — Expected Results</div>
+  <h2 class="section-title">What We Expect to Demonstrate</h2>
+
+  <div class="expect-timeline">
+    <div class="expect-item">
+      <div class="expect-dot">01</div>
+      <div class="expect-content">
+        <div class="expect-title">Successful burst registration across different motion levels</div>
+        <p class="expect-text">
+          ECC alignment should achieve sub-pixel accuracy (&lt; 0.5 px residual) for tripod-mounted
+          bursts. For handheld shots (1–5 px jitter), phase correlation should converge within
+          1 pixel. We expect &gt; 95% of frame pairs to align successfully.
+        </p>
+      </div>
+    </div>
+    <div class="expect-item">
+      <div class="expect-dot">02</div>
+      <div class="expect-content">
+        <div class="expect-title">Noise reduced by ~√N across all methods at minimum</div>
+        <p class="expect-text">
+          Even the simplest mean fusion should deliver the theoretical √8 ≈ 2.83× noise reduction
+          (~4.5 dB PSNR improvement) on static scenes. This validates the registration quality
+          and serves as an interpretable lower bound.
+        </p>
+      </div>
+    </div>
+    <div class="expect-item">
+      <div class="expect-dot">03</div>
+      <div class="expect-content">
+        <div class="expect-title">NLM achieves best perceptual quality, frequency domain preserves textures</div>
+        <p class="expect-text">
+          We expect NLM to score highest on SSIM due to edge-preserving denoising. The frequency-domain
+          Wiener filter should outperform NLM on synthetic textures (repetitive patterns)
+          while showing ringing near high-contrast edges.
+        </p>
+      </div>
+    </div>
+    <div class="expect-item">
+      <div class="expect-dot">04</div>
+      <div class="expect-content">
+        <div class="expect-title">Visible improvement in final RGB output</div>
+        <p class="expect-text">
+          The side-by-side comparison between a single noisy frame and the full pipeline output
+          should show clearly reduced grain in flat areas (sky, walls) and improved readability
+          of fine details (text, foliage) without significant loss of sharpness.
+        </p>
+      </div>
+    </div>
+    <div class="expect-item">
+      <div class="expect-dot">05</div>
+      <div class="expect-content">
+        <div class="expect-title">Graceful degradation with more motion / fewer frames</div>
+        <p class="expect-text">
+          We will also demonstrate the pipeline's limitations: large inter-frame motion (> 10 px)
+          causes registration failure artifacts, and burst sizes below N = 4 show diminishing
+          denoising returns. The weighted method should degrade more gracefully than simple mean
+          under these stress conditions.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Code quick-start -->
+<section class="section" id="s-code">
+  <div class="section-label">Quick Start</div>
+  <h2 class="section-title">Running the Pipeline</h2>
+  <div class="code-block">
+<span class="c"># Install dependencies</span>
+pip install numpy opencv-python scipy rawpy
+
+<span class="c"># Run with synthetic demo data (no camera needed)</span>
+python run_pipeline.py <span class="n">--demo</span> <span class="n">--method</span> all
+
+<span class="c"># Process a real CR3 burst</span>
+python run_pipeline.py <span class="n">--input_dir</span> ./data/burst_01/ <span class="n">--method</span> weighted <span class="n">--reg_method</span> ecc
+
+<span class="c"># Compare all denoising methods side by side</span>
+python run_pipeline.py <span class="n">--input_dir</span> ./data/ <span class="n">--method</span> all <span class="n">--output</span> ./results/
+
+<span class="c"># Run unit tests</span>
+pytest tests/test_pipeline.py -v
+  </div>
+</section>
+
+<footer>
+  <span>Night Photography Denoising Pipeline · Class Project</span>
+  <span>NumPy · OpenCV · SciPy · rawpy</span>
+</footer>
+
+</div><!-- .page -->
+
+<script>
+// ── Canvas noise visualisations ──────────────────────────────────────────────
+function drawNoisy(canvas, noiseLevel, blur) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const img = ctx.createImageData(W, H);
+
+  // Simple synthetic "night scene": gradient sky + lit window
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let v = 20 + y * 0.4 + (x > 70 && x < 130 && y > 50 && y < 110 ? 120 : 0);
+      let n = (Math.random() - 0.5) * noiseLevel;
+      v = Math.max(0, Math.min(255, v + n));
+      const i = (y * W + x) * 4;
+      img.data[i] = img.data[i+1] = img.data[i+2] = v;
+      img.data[i+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  if (blur > 0) {
+    ctx.filter = `blur(${blur}px)`;
+    ctx.drawImage(canvas, 0, 0);
+    ctx.filter = 'none';
+  }
+}
+
+function drawBurstAvg(canvas, n, noiseLevel) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const acc = new Float32Array(W * H);
+
+  for (let f = 0; f < n; f++) {
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        let v = 20 + y * 0.4 + (x > 70 && x < 130 && y > 50 && y < 110 ? 120 : 0);
+        v += (Math.random() - 0.5) * noiseLevel;
+        acc[y * W + x] += v;
+      }
+    }
+  }
+  const img = ctx.createImageData(W, H);
+  for (let i = 0; i < W * H; i++) {
+    const v = Math.max(0, Math.min(255, acc[i] / n));
+    img.data[i*4] = img.data[i*4+1] = img.data[i*4+2] = v;
+    img.data[i*4+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawClean(canvas) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let v = 20 + y * 0.4 + (x > 70 && x < 130 && y > 50 && y < 110 ? 120 : 0);
+      v += (Math.random() - 0.5) * 4;  // residual noise after NLM
+      v = Math.max(0, Math.min(255, v));
+      const i = (y * W + x) * 4;
+      img.data[i] = img.data[i+1] = img.data[i+2] = v;
+      img.data[i+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.filter = 'blur(0.8px)';
+  ctx.drawImage(canvas, 0, 0);
+  ctx.filter = 'none';
+}
+
+drawNoisy(document.getElementById('canvas-noisy'), 80, 0);
+drawBurstAvg(document.getElementById('canvas-burst'), 8, 80);
+drawClean(document.getElementById('canvas-clean'));
+
+// ── Pipeline step selector ───────────────────────────────────────────────────
+function selectStep(idx) {
+  for (let i = 0; i < 5; i++) {
+    document.getElementById('step-'+i).classList.toggle('active', i === idx);
+    const d = document.getElementById('detail-'+i);
+    d.classList.toggle('show', i === idx);
+  }
+}
+
+// ── Method tab selector ──────────────────────────────────────────────────────
+function selectMethod(name) {
+  const names = ['mean','weighted','frequency','nlm'];
+  document.querySelectorAll('.mtab').forEach((t, i) => t.classList.toggle('active', names[i] === name));
+  names.forEach(n => {
+    document.getElementById('m-'+n).classList.toggle('show', n === name);
+  });
+}
+
+// ── Scrollspy ────────────────────────────────────────────────────────────────
+const sections = ['s-hero','s-problem','s-data','s-solution','s-methods','s-results'];
+const dots = document.querySelectorAll('.nav-dot');
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      const idx = sections.indexOf(e.target.id);
+      if (idx >= 0) dots.forEach((d, i) => d.classList.toggle('active', i === idx));
+    }
+  });
+}, { threshold: 0.4 });
+sections.forEach(id => { const el = document.getElementById(id); if (el) observer.observe(el); });
+dots.forEach((d, i) => {
+  d.addEventListener('click', () => {
+    document.getElementById(sections[i])?.scrollIntoView({ behavior: 'smooth' });
+  });
+});
+</script>
+</body>
+</html>
