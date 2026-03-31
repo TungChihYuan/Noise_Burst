@@ -37,20 +37,25 @@ _BAYER_ALIASES = {
     "GBGR": "GBRG",
 }
 
+# Correct OpenCV Bayer->RGB codes verified by channel order test.
+# OpenCV's BayerXY naming refers to the top-left 2x2 tile, but the output
+# channel order is counterintuitive: COLOR_BayerRG2RGB actually outputs BGR.
+# These codes are the ones that correctly produce [R,G,B] output:
+#   RGGB -> BayerBG2RGB,  BGGR -> BayerRG2RGB
+#   GRBG -> BayerGB2RGB,  GBRG -> BayerGR2RGB
 _BAYER_CODES = {
-    # (pattern, method) -> cv2 code
-    ("RGGB", "bilinear"):  cv2.COLOR_BayerRG2RGB,
-    ("RGGB", "edgeaware"): cv2.COLOR_BayerRG2RGB_EA,
-    ("RGGB", "vng"):       cv2.COLOR_BayerRG2RGB_VNG,
-    ("BGGR", "bilinear"):  cv2.COLOR_BayerBG2RGB,
-    ("BGGR", "edgeaware"): cv2.COLOR_BayerBG2RGB_EA,
-    ("BGGR", "vng"):       cv2.COLOR_BayerBG2RGB_VNG,
-    ("GRBG", "bilinear"):  cv2.COLOR_BayerGR2RGB,
-    ("GRBG", "edgeaware"): cv2.COLOR_BayerGR2RGB_EA,
-    ("GRBG", "vng"):       cv2.COLOR_BayerGR2RGB_VNG,
-    ("GBRG", "bilinear"):  cv2.COLOR_BayerGB2RGB,
-    ("GBRG", "edgeaware"): cv2.COLOR_BayerGB2RGB_EA,
-    ("GBRG", "vng"):       cv2.COLOR_BayerGB2RGB_VNG,
+    ("RGGB", "bilinear"):  cv2.COLOR_BayerBG2RGB,
+    ("RGGB", "edgeaware"): cv2.COLOR_BayerBG2RGB_EA,
+    ("RGGB", "vng"):       cv2.COLOR_BayerBG2RGB_VNG,
+    ("BGGR", "bilinear"):  cv2.COLOR_BayerRG2RGB,
+    ("BGGR", "edgeaware"): cv2.COLOR_BayerRG2RGB_EA,
+    ("BGGR", "vng"):       cv2.COLOR_BayerRG2RGB_VNG,
+    ("GRBG", "bilinear"):  cv2.COLOR_BayerGB2RGB,
+    ("GRBG", "edgeaware"): cv2.COLOR_BayerGB2RGB_EA,
+    ("GRBG", "vng"):       cv2.COLOR_BayerGB2RGB_VNG,
+    ("GBRG", "bilinear"):  cv2.COLOR_BayerGR2RGB,
+    ("GBRG", "edgeaware"): cv2.COLOR_BayerGR2RGB_EA,
+    ("GBRG", "vng"):       cv2.COLOR_BayerGR2RGB_VNG,
 }
 ColorSpace      = Literal["srgb", "prophoto"]
 NoiseReduceMode = Literal["gaussian", "bilateral", "none"]
@@ -84,6 +89,7 @@ def run_isp(
     demosaic_method: DemosaicMethod  = "edgeaware",
     bayer_pattern:   str             = "auto",
     white_balance:   tuple | None    = None,
+    camera_matrix:   np.ndarray | None = None,
     color_space:     ColorSpace      = "srgb",
     saturation:      float           = 1.15,
     hue_shift:       float           = 0.0,
@@ -117,11 +123,20 @@ def run_isp(
     stager.save(2, "demosaic", rgb)
 
     # 3. White balance
-    rgb = apply_white_balance(rgb, white_balance)
+    # When camera_matrix is provided (fitted from rawpy), it already encodes WB,
+    # so we skip grey-world WB and pass identity gains.
+    if camera_matrix is not None:
+        rgb = apply_white_balance(rgb, (1.0, 1.0, 1.0))
+    else:
+        rgb = apply_white_balance(rgb, white_balance)
     stager.save(3, "white_balance", rgb)
 
     # 4. Color space transform
-    rgb = color_space_transform(rgb, target=color_space)
+    if camera_matrix is not None:
+        print(f"  [isp] Using fitted camera->sRGB matrix")
+    else:
+        print(f"  [isp] Using generic sRGB primaries")
+    rgb = color_space_transform(rgb, target=color_space, camera_matrix=camera_matrix)
     stager.save(4, f"colorspace_{color_space}", rgb)
 
     # 5. Color manipulation
@@ -246,12 +261,36 @@ def apply_white_balance(rgb: np.ndarray, gains: tuple | None = None) -> np.ndarr
     return np.clip(out, 0.0, 1.0)
 
 
-def color_space_transform(rgb: np.ndarray, target: ColorSpace = "srgb") -> np.ndarray:
+def color_space_transform(
+    rgb: np.ndarray,
+    target: ColorSpace = "srgb",
+    camera_matrix = None,
+) -> np.ndarray:
+    """
+    Convert WB-scaled camera RGB to the output colour space.
+
+    camera_matrix : (3,3) float32  cam_wb_RGB -> linear sRGB (D65),
+                    derived from DNG metadata in raw_loader.
+                    Falls back to generic sRGB primaries when None.
+    """
     H, W, _ = rgb.shape
-    flat = rgb.reshape(-1, 3)
-    xyz = flat @ _MAT_RGB_TO_XYZ.T
-    mat = _MAT_XYZ_TO_SRGB if target == "srgb" else _MAT_XYZ_TO_PROPHOTO
-    out = xyz @ mat.T
+    flat = rgb.reshape(-1, 3).astype(np.float64)
+
+    if camera_matrix is not None:
+        out = flat @ camera_matrix.astype(np.float64).T
+        if target == "prophoto":
+            srgb_to_xyz = np.linalg.inv(np.array([
+                [ 3.2404542,-1.5371385,-0.4985314],
+                [-0.9692660, 1.8760108, 0.0415560],
+                [ 0.0556434,-0.2040259, 1.0572252],
+            ]))
+            out = np.clip(out, 0, 1) @ (srgb_to_xyz @ _MAT_XYZ_TO_PROPHOTO).T
+    else:
+        # Generic fallback: assume linear sRGB primaries
+        xyz = flat @ _MAT_RGB_TO_XYZ.T
+        mat = _MAT_XYZ_TO_SRGB if target == "srgb" else _MAT_XYZ_TO_PROPHOTO
+        out = xyz @ mat.T
+
     return np.clip(out.reshape(H, W, 3), 0.0, 1.0).astype(np.float32)
 
 

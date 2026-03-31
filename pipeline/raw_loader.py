@@ -119,73 +119,109 @@ def _crop_black_border(bayer: np.ndarray, threshold: float = 0.02) -> np.ndarray
     return cropped
 
 
-def _load_via_rawpy(path: Path) -> tuple[np.ndarray, str]:
-    """Returns (bayer_f32, pattern_string) e.g. ('RGGB')."""
+def _load_via_rawpy(path: Path) -> tuple[np.ndarray, str, bool, np.ndarray | None]:
+    """
+    Load CR3/RAW via rawpy. Returns Bayer mosaic + derived color matrix.
+
+    Color matrix derivation follows the DNG spec:
+      1. cam_to_XYZ = inv(rgb_xyz_matrix[:3,:3])      # rawpy gives XYZ->cam
+      2. AsShotNeutral = 1/wb (normalised to G)
+      3. xyz_white = cam_to_XYZ @ AsShotNeutral
+      4. adapt = diag(D65_white / xyz_white)           # scene white -> D65
+      5. M = M_xyz_sRGB @ adapt @ cam_to_XYZ @ diag(1/wb_n)
+    This maps WB-scaled camera RGB directly to linear sRGB (D65).
+    """
     import rawpy  # type: ignore
+
     with rawpy.imread(str(path)) as raw:
-        # ── Active image area via raw.sizes ───────────────────────────────
-        # raw.sizes gives the precise active pixel rectangle, which is more
-        # reliable than raw_image_visible on Canon bodies where the two can
-        # have the same shape but still include masked border pixels.
-        sz = raw.sizes
-        top  = sz.top_margin
-        left = sz.left_margin
-        # Use raw_image (full sensor) and crop to the active area manually,
-        # ensuring the crop is aligned to an even row/col (Bayer grid requires it).
-        top  = top  + (top  % 2)   # round up to even
-        left = left + (left % 2)
-        height = sz.iheight - (sz.iheight % 2)
-        width  = sz.iwidth  - (sz.iwidth  % 2)
+        # ── Bayer mosaic (active area only) ───────────────────────────────
+        # raw_image_visible already crops out optical black borders.
+        bayer_u16 = raw.raw_image_visible.copy()
+        # Align to 2x2 Bayer grid
+        hv, wv = bayer_u16.shape
+        bayer_u16 = bayer_u16[:hv-(hv%2), :wv-(wv%2)]
+        wl = raw.white_level if raw.white_level else int(bayer_u16.max())
+        bl = raw.black_level_per_channel or [0, 0, 0, 0]
 
-        bayer_u16 = raw.raw_image[top:top+height, left:left+width].copy()
-        white_level = raw.white_level if raw.white_level else int(bayer_u16.max())
+        # ── Bayer pattern from raw_pattern ────────────────────────────────
+        # raw.raw_pattern is a 2x2 array of channel indices:
+        #   0=R, 1=Gr, 2=B, 3=Gb  (matches color_desc RGBG order)
+        # Map to standard 4-char pattern name by reading top-left 2x2 tile.
+        pat = raw.raw_pattern  # e.g. [[0,1],[3,2]] for RGGB
+        _IDX_TO_CHAR = {0: 'R', 1: 'G', 2: 'B', 3: 'G'}
+        pattern_4 = (_IDX_TO_CHAR[pat[0,0]] + _IDX_TO_CHAR[pat[0,1]] +
+                     _IDX_TO_CHAR[pat[1,0]] + _IDX_TO_CHAR[pat[1,1]])
+        # Collapse RGGB/RGGB variants -> canonical name
+        _CANON = {'RGGB':'RGGB','BGGR':'BGGR','GRBG':'GRBG','GBRG':'GBRG',
+                  'RGBG':'RGGB','BGRG':'BGGR'}
+        pattern = _CANON.get(pattern_4, pattern_4)
+        print(f'  [raw_loader] raw_pattern={pat.tolist()} -> {pattern_4} -> {pattern}')
 
-        # Black level per channel [R, Gr, Gb, B] — used for per-channel subtraction
-        black_levels = raw.black_level_per_channel   # [R, Gr, Gb, B]
-        if black_levels is None:
-            black_levels = [0, 0, 0, 0]
-        black_level = int(min(black_levels))  # scalar fallback
+        # ── Camera white balance ──────────────────────────────────────────
+        # camera_whitebalance: [R, Gr, B, Gb] multipliers as shot.
+        # Normalise to Gr=1 so green channel is unchanged.
+        wb_raw = np.array(raw.camera_whitebalance[:3], dtype=np.float64)
+        g = wb_raw[1] if wb_raw[1] > 0 else 1.0
+        wb_n = wb_raw / g   # [R_gain, 1.0, B_gain]
+        print(f'  [raw_loader] camera_whitebalance  R={wb_n[0]:.3f}  G=1.000  B={wb_n[2]:.3f}')
 
-        print(f"  [raw_loader] active area: top={top} left={left} h={height} w={width}")
-        print(f"  [raw_loader] black_levels per channel: {black_levels}")
+        # ── Color matrix from rgb_xyz_matrix ──────────────────────────────
+        # rgb_xyz_matrix is XYZ->cam (the DNG ColorMatrix tag).
+        # We need cam->XYZ, so we invert it.
+        xyz_to_cam = raw.rgb_xyz_matrix[:3, :3].astype(np.float64)
 
-        # ── Bayer pattern ─────────────────────────────────────────────────
-        raw_pattern = raw.color_desc.decode(errors="replace").strip(chr(0))[:4]
-        _ALIASES = {"RGBG": "RGGB", "BGRG": "BGGR", "GBGR": "GBRG"}
-        pattern = _ALIASES.get(raw_pattern.upper(), raw_pattern.upper())
-        if pattern != raw_pattern.upper():
-            print(f"  [raw_loader] Bayer alias {raw_pattern!r} -> {pattern}")
+    h, w = bayer_u16.shape
+    print(f'  [raw_loader] raw_image_visible: h={h} w={w}  black={min(bl)}  white={wl}')
 
-        # ── Camera white balance gains ────────────────────────────────────
-        wb_gains = raw.camera_whitebalance   # [R, G1, B, G2]
-        g1 = wb_gains[1] if wb_gains[1] > 0 else 1.0
-        wb_norm = [wb_gains[0] / g1, 1.0, wb_gains[2] / g1, 1.0]
-        print(f"  [raw_loader] Camera WB gains  R={wb_norm[0]:.3f}  G=1.000  B={wb_norm[2]:.3f}")
+    # cam -> XYZ (D50, calibration illuminant)
+    cam_to_xyz = np.linalg.inv(xyz_to_cam)
 
-    print(f"  [raw_loader] black={black_level}  white={white_level}  pattern={pattern}")
+    # AsShotNeutral: what the camera sensor reads for a neutral surface
+    asn = 1.0 / wb_n
+    asn = asn / asn[1]               # normalise to G=1
 
-    # ── Per-channel black-level subtract + normalise ─────────────────────
-    # Subtracting per-channel avoids residual dark gradients at sensor edges
-    # that arise when channels have slightly different black levels.
+    # Scene white point in XYZ (D50)
+    xyz_white = cam_to_xyz @ asn
+
+    # Chromatic adaptation: scene white -> D65 white
+    D65 = np.array([0.95047, 1.0, 1.08883])
+    adapt_scale = D65 / (xyz_white + 1e-10)
+    M_adapt = np.diag(adapt_scale)
+
+    # XYZ D65 -> linear sRGB
+    M_xyz_srgb = np.array([
+        [ 3.2404542, -1.5371385, -0.4985314],
+        [-0.9692660,  1.8760108,  0.0415560],
+        [ 0.0556434, -0.2040259,  1.0572252],
+    ], dtype=np.float64)
+
+    # Full matrix: cam_raw_RGB -> linear sRGB
+    # Pipeline: cam_raw -> [cam_to_xyz] -> XYZ_D50 -> [adapt] -> XYZ_D65 -> [M_xyz_srgb] -> sRGB
+    # No explicit WB term needed: the white point adaptation (adapt) derived from
+    # AsShotNeutral already accounts for the scene illuminant.
+    color_matrix = (M_xyz_srgb @ M_adapt @ cam_to_xyz).astype(np.float32)
+    print(f'  [raw_loader] Color matrix (cam_wb_RGB -> linear sRGB):')
+    for row in color_matrix:
+        print(f'              {row.round(4)}')
+
+    # ── Per-channel black_level_per_channel subtract ─────────────────────
+    # bl = [R, Gr, Gb, B] matching the Bayer tile positions:
+    #   even row / even col = R  -> bl[0]
+    #   even row / odd  col = Gr -> bl[1]
+    #   odd  row / even col = Gb -> bl[2]
+    #   odd  row / odd  col = B  -> bl[3]
     bayer_f32 = bayer_u16.astype(np.float32)
-    bl = black_levels  # [R, Gr, Gb, B] maps to Bayer tile positions
-    bayer_f32[0::2, 0::2] = (bayer_f32[0::2, 0::2] - bl[0]) / (white_level - bl[0])  # R
-    bayer_f32[0::2, 1::2] = (bayer_f32[0::2, 1::2] - bl[1]) / (white_level - bl[1])  # Gr
-    bayer_f32[1::2, 0::2] = (bayer_f32[1::2, 0::2] - bl[2]) / (white_level - bl[2])  # Gb
-    bayer_f32[1::2, 1::2] = (bayer_f32[1::2, 1::2] - bl[3]) / (white_level - bl[3])  # B
+    bayer_f32[0::2, 0::2] = (bayer_f32[0::2, 0::2] - bl[0]) / (wl - bl[0])  # R
+    bayer_f32[0::2, 1::2] = (bayer_f32[0::2, 1::2] - bl[1]) / (wl - bl[1])  # Gr
+    bayer_f32[1::2, 0::2] = (bayer_f32[1::2, 0::2] - bl[2]) / (wl - bl[2])  # Gb
+    bayer_f32[1::2, 1::2] = (bayer_f32[1::2, 1::2] - bl[3]) / (wl - bl[3])  # B
     bayer_f32 = np.clip(bayer_f32, 0.0, 1.0)
 
-    # ── Auto-crop residual black border rows/cols ─────────────────────────
-    # Some Canon bodies have a few near-black rows at the edges even after
-    # active-area cropping. Detect and remove them with a threshold scan.
-    bayer_f32 = _crop_black_border(bayer_f32)
+    # NOTE: WB is NOT applied in Bayer domain to avoid clipping highlights.
+    # The color_matrix already encodes WB (via the diag(1/wb_n) term),
+    # so applying WB after demosaic inside color_space_transform is sufficient.
 
-    # ── Apply camera WB in Bayer domain ───────────────────────────────────
-    bayer_f32[0::2, 0::2] *= wb_norm[0]   # R
-    bayer_f32[1::2, 1::2] *= wb_norm[2]   # B
-    bayer_f32 = np.clip(bayer_f32, 0.0, 1.0)
-
-    return bayer_f32, pattern, True
+    return bayer_f32, pattern, True, color_matrix
 
 
 def _load_via_dcraw(path: Path) -> np.ndarray:

@@ -72,17 +72,20 @@ def load_burst_from_dir(input_dir: Path, max_frames: int | None) -> list[np.ndar
     frames = []
     detected_pattern = None
     camera_wb_applied = False
+    camera_matrix = None
     for f in files:
-        bayer, pattern, wb = load_raw_bayer(f)
+        bayer, pattern, wb, cmat = load_raw_bayer(f)
         frames.append(bayer)
         if detected_pattern is None and pattern not in ("unknown", ""):
             detected_pattern = pattern
         if wb:
             camera_wb_applied = True
+        if cmat is not None and camera_matrix is None:
+            camera_matrix = cmat
         print(f"  {f.name}  [pattern: {pattern}  camera_wb: {wb}]")
     if detected_pattern:
-        print(f"  => Bayer pattern: {detected_pattern}  camera WB pre-applied: {camera_wb_applied}")
-    return frames, detected_pattern or "auto", camera_wb_applied
+        print(f"  => Bayer pattern: {detected_pattern}  camera WB: {camera_wb_applied}  color matrix: {camera_matrix is not None}")
+    return frames, detected_pattern or "auto", camera_wb_applied, camera_matrix
 
 
 def find_scene_dirs(data_dir: Path) -> list[Path]:
@@ -105,11 +108,12 @@ def find_scene_dirs(data_dir: Path) -> list[Path]:
 
 def _save_comparison_png(
     noisy_rgb: np.ndarray,
+    reg_rgb: np.ndarray,
     results: dict[str, np.ndarray],
     output_dir: Path,
 ) -> None:
-    panels = [noisy_rgb] + list(results.values())
-    labels = ["Noisy (single frame)"] + [m.upper() for m in results]
+    panels = [noisy_rgb, reg_rgb] + list(results.values())
+    labels = ["Noisy (single frame)", "Registered mean (no filter)"] + [m.upper() for m in results]
     h, w = panels[0].shape[:2]
     strip = np.zeros((h + 30, w * len(panels), 3), dtype=np.uint8)
     for i, (panel, label) in enumerate(zip(panels, labels)):
@@ -131,6 +135,7 @@ def run(
     output_dir: Path,
     bayer_pattern: str = "auto",
     white_balance: tuple | None = None,
+    camera_matrix = None,
     color_space: str = "srgb",
     zoom: float = 1.0,
     jpeg_quality: int = 92,
@@ -156,9 +161,18 @@ def run(
     metrics["registration_time_s"] = round(reg_time, 3)
     print(f"  Reference frame: {ref_idx}  |  Time: {reg_time:.2f}s")
 
-    # Save noisy reference (no stage saving for the single-frame reference)
-    noisy_rgb = run_isp(frames[ref_idx], bayer_pattern=bayer_pattern, white_balance=white_balance, color_space=color_space, zoom=zoom)
+    # Save 1: single noisy frame before registration
+    noisy_rgb = run_isp(frames[ref_idx], bayer_pattern=bayer_pattern, white_balance=white_balance, camera_matrix=camera_matrix, color_space=color_space, zoom=zoom)
     save_image(noisy_rgb, str(output_dir / "noisy_reference.png"))
+
+    # Save 2: mean of all aligned frames with NO denoising filter.
+    # noisy_reference = 1 frame,  registered_mean = N frames averaged.
+    # Difference shows the pure multi-frame averaging gain (sqrt(N) noise reduction).
+    aligned_mean = np.stack(aligned, axis=0).mean(axis=0).astype(np.float32)
+    reg_rgb = run_isp(aligned_mean, bayer_pattern=bayer_pattern, white_balance=white_balance,
+                      camera_matrix=camera_matrix, color_space=color_space, zoom=zoom)
+    save_image(reg_rgb, str(output_dir / "registered_mean.png"))
+    print(f"[pipeline] Saved registered mean ({len(aligned)} frames averaged, no denoise filter) -> registered_mean.png")
 
     # Stage 3: Denoising + full ISP per method
     print("\n[Stage 3] Denoising ...")
@@ -176,6 +190,7 @@ def run(
             denoised_bayer,
             bayer_pattern=bayer_pattern,
             white_balance=white_balance,
+            camera_matrix=camera_matrix,
             color_space=color_space,
             zoom=zoom,
             jpeg_quality=jpeg_quality,
@@ -198,7 +213,7 @@ def run(
 
     metrics["methods"] = method_metrics
 
-    _save_comparison_png(noisy_rgb, denoised_results, output_dir)
+    _save_comparison_png(noisy_rgb, reg_rgb, denoised_results, output_dir)
     metrics_path = output_dir / "metrics.json"
     with open(metrics_path, "w") as fh:
         json.dump(metrics, fh, indent=2)
@@ -272,11 +287,13 @@ def main():
 
     if len(scene_dirs) == 1 and scene_dirs[0] == args.input_dir:
         # Single scene — no subdirs found
-        frames, detected_pattern, cam_wb = load_burst_from_dir(args.input_dir, args.n_frames)
+        frames, detected_pattern, cam_wb, cam_matrix = load_burst_from_dir(args.input_dir, args.n_frames)
         if args.bayer_pattern == "auto" and detected_pattern != "auto":
             isp_kwargs["bayer_pattern"] = detected_pattern
         if cam_wb:
-            isp_kwargs["white_balance"] = (1.0, 1.0, 1.0)  # camera WB already applied
+            isp_kwargs["white_balance"] = (1.0, 1.0, 1.0)
+        if cam_matrix is not None:
+            isp_kwargs["camera_matrix"] = cam_matrix  # camera WB already applied
         run(frames=frames, methods=methods, reg_method=args.reg_method,
             output_dir=args.output, **isp_kwargs)
         print(f"\n[pipeline] Done. Results in: {args.output}")
@@ -289,12 +306,14 @@ def main():
             print(f"[pipeline] Scene: {scene_dir.name}")
             print(sep)
             try:
-                frames, detected_pattern, cam_wb = load_burst_from_dir(scene_dir, args.n_frames)
+                frames, detected_pattern, cam_wb, cam_matrix = load_burst_from_dir(scene_dir, args.n_frames)
                 scene_kwargs = dict(isp_kwargs)
                 if args.bayer_pattern == "auto" and detected_pattern != "auto":
                     scene_kwargs["bayer_pattern"] = detected_pattern
                 if cam_wb:
                     scene_kwargs["white_balance"] = (1.0, 1.0, 1.0)
+                if cam_matrix is not None:
+                    scene_kwargs["camera_matrix"] = cam_matrix
                 scene_output = args.output / scene_dir.name
                 run(frames=frames, methods=methods, reg_method=args.reg_method,
                     output_dir=scene_output, **scene_kwargs)

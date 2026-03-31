@@ -190,9 +190,15 @@ def _nlm_fuse(
     **_,
 ) -> np.ndarray:
     """
-    Fuse using temporal mean first, then apply OpenCV NLM on the result.
+    Fuse using temporal mean, then apply OpenCV NLM per Bayer plane.
 
-    h_param controls the filter strength; auto-estimated from noise if None.
+    NLM must NOT be applied to the full Bayer mosaic directly: adjacent
+    pixels belong to different colour channels (R, Gr, Gb, B), so
+    patch-similarity comparisons would mix channel values and produce
+    colour artefacts (e.g. purple cast).
+
+    Fix: temporal-mean first, then denoise each half-resolution Bayer
+    plane (R, Gr, Gb, B) independently with NLM.
     """
     mean_img = _mean_fuse(frames)
 
@@ -200,12 +206,18 @@ def _nlm_fuse(
         sigma = estimate_noise_sigma(frames[0])
         h_param = max(3.0, float(sigma * 255 * 1.5))
 
-    # OpenCV NLM expects uint8
-    mean_u8 = (np.clip(mean_img, 0, 1) * 255).astype(np.uint8)
-    denoised_u8 = cv2.fastNlMeansDenoising(
-        mean_u8,
-        h=h_param,
-        templateWindowSize=template_window,
-        searchWindowSize=search_window,
-    )
-    return (denoised_u8.astype(np.float32) / 255.0)
+    denoised = np.empty_like(mean_img)
+
+    # Process each Bayer plane independently
+    for dr, dc in ((0,0),(0,1),(1,0),(1,1)):
+        plane = mean_img[dr::2, dc::2]
+        plane_u8 = (np.clip(plane, 0, 1) * 255).astype(np.uint8)
+        plane_denoised = cv2.fastNlMeansDenoising(
+            plane_u8,
+            h=h_param,
+            templateWindowSize=template_window,
+            searchWindowSize=search_window,
+        )
+        denoised[dr::2, dc::2] = plane_denoised.astype(np.float32) / 255.0
+
+    return denoised

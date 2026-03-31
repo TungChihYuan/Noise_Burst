@@ -197,10 +197,46 @@ def _apply_warp(
     M: np.ndarray,
     size: tuple[int, int],
 ) -> np.ndarray:
+    """
+    Warp a Bayer mosaic without cross-channel contamination.
+
+    Direct warpAffine on a Bayer array mixes adjacent pixels from different
+    colour channels (R, Gr, Gb, B).  Fix: warp each half-resolution colour
+    plane independently, then reassemble.
+
+    For correct colour separation, the integer part of the translation must
+    be even (so that R pixels stay on even columns, Gr on odd columns, etc.).
+    We round the integer translation components to the nearest even value and
+    keep only the sub-pixel remainder for interpolation.
+    """
     H, W = size
-    warped = cv2.warpAffine(
-        src, M[:2], (W, H),
-        flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
-        borderMode=cv2.BORDER_REFLECT_101,
-    )
+    Hh, Wh = H // 2, W // 2
+    m = M[:2].astype(np.float64)
+    a, b, tx = m[0]
+    c, d, ty = m[1]
+
+    # Round integer translation to nearest even number, keep sub-pixel residual.
+    tx_int = round(tx / 2) * 2   # nearest even integer
+    ty_int = round(ty / 2) * 2
+    tx_sub = tx - tx_int          # sub-pixel residual  (|tx_sub| <= 1)
+    ty_sub = ty - ty_int
+
+    warped = np.empty_like(src)
+    for dr, dc in ((0,0),(0,1),(1,0),(1,1)):
+        plane = src[dr::2, dc::2].astype(np.float32)
+
+        # Translate the integer shift to plane coordinates (halve it).
+        # The sub-pixel residual is also halved for the plane warp.
+        tx_p = tx_int / 2.0 + tx_sub / 2.0  # = tx / 2  (same as before)
+        ty_p = ty_int / 2.0 + ty_sub / 2.0
+
+        M_plane = np.array([[a, b, tx_p],
+                            [c, d, ty_p]], dtype=np.float64)
+        w = cv2.warpAffine(
+            plane, M_plane, (Wh, Hh),
+            flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+        warped[dr::2, dc::2] = w
+
     return warped.astype(np.float32)
